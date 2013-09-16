@@ -1,7 +1,11 @@
 (ns blog.utils.reactive
+  ;; import clojure.core, but without the following functions: they will be
+  ;; defined in namespace-specific terms later.
   (:refer-clojure :exclude [map filter remove distinct concat take-while])
   (:require [goog.events :as events]
             [goog.events.EventType]
+            ;; goog.events API docs:
+            ;; http://docs.closure-library.googlecode.com/git/closure_goog_events_events.js.html
             [goog.net.Jsonp]
             [goog.Uri]
             [goog.dom :as gdom]
@@ -10,11 +14,15 @@
             [blog.utils.dom :as dom])
   (:require-macros [cljs.core.async.macros :refer [go alt!]]
                    [blog.utils.macros :refer [dochan]])
+  ;; import, just like importing a Java package
   (:import goog.events.EventType))
 
 (defn atom? [x]
   (instance? Atom x))
 
+;; Since a map is callable, this works perfectly well with a keyword argument
+;; to return the event type. (keyword->event-type :keyup) quite naturally
+;; returns goog.events.EventType.KEYUP. Clever.
 (def keyword->event-type
   {:keyup goog.events.EventType.KEYUP
    :keydown goog.events.EventType.KEYDOWN
@@ -38,14 +46,27 @@
       (>! out e))
     out))
 
+;; Begin listening on the DOM element for events of the specified type, putting
+;; each one in an output channel. Returns the output channel.
 (defn listen
+  ;; element, type
   ([el type] (listen el type nil))
+  ;; element, type, optional immediate handler function
   ([el type f] (listen el type f (chan)))
+  ;; element, type, handler, output channel
   ([el type f out]
+    ;; events/listen: [element type handler]; complemented by events/unlisten;
+    ;; note that in this implementation, we're listening with an anonymous
+    ;; function, so this event listener can never be removed. We can always
+    ;; close the output channel though...
     (events/listen el (keyword->event-type type)
       (fn [e] (when f (f e)) (put! out e)))
     out))
 
+;; Given a function f and an input channel... sets up a go block consisting of
+;; a loop which takes elements from the input channel, applies f to them, and
+;; puts the result in the output channel. Returns the output channel. When the
+;; input channel is empty, the output channel is closed.
 (defn map [f in]
   (let [out (chan)]
     (go (loop []
@@ -55,6 +76,11 @@
             (close! out))))
     out))
 
+;; Given a predicate function and an input channel, sets up a go block which
+;; sends input values to the output channel only if they pass the predicate.
+;; Returns the output channel, of course. I am noticing that the output
+;; channel of each of these methods can serve as the input channel for
+;; another one, which is a serious lightbulb moment.
 (defn filter [pred in]
   (let [out (chan)]
     (go (loop []
@@ -64,6 +90,10 @@
             (close! out))))
     out))
 
+;; The inverse of filter. filter:select::remove:reject. But don't forget,
+;; this and filter can both take sets, since sets are callable; this makes it
+;; possible to just say (filter #{:a :b :c} in) to get an output channel
+;; ignoring all other values.
 (defn remove [f in]
   (let [out (chan)]
     (go (loop []
@@ -73,6 +103,8 @@
             (close! out))))
     out))
 
+;; Returns an output channel which will contain each item in the xs seq, in
+;; order, closing when none remain.
 (defn spool [xs]
   (let [out (chan)]
     (go (loop [xs (seq xs)]
@@ -82,6 +114,9 @@
             (close! out))))
     out))
 
+;; Given a predicate function, an input channel, and optionally a vector of two
+;; output channels, sends results from the input to the output channels based
+;; on the predicate. Returns a vector of the two output channels.
 (defn split
   ([pred in] (split pred in [(chan) (chan)]))
   ([pred in [out1 out2]]
@@ -94,6 +129,8 @@
                 (recur))))))
     [out1 out2]))
 
+;; Given a seq of xs and an input channel, places all the xs in the output
+;; channel, then reads from the input channel to the output channel.
 (defn concat [xs in]
   (let [out (chan)]
     (go (loop [xs (seq xs)]
@@ -106,6 +143,8 @@
               (close! out)))))
     out))
 
+;; Reads from the input channel to the output channel, discarding sequential
+;; identical items (but not enforcing overall uniqueness).
 (defn distinct [in]
   (let [out (chan)]
     (go (loop [last nil]
@@ -115,6 +154,11 @@
             (close! out))))
     out))
 
+;; Given a seq of input channels and optionally an output channel, returns an
+;; output channel which is given all items from all input channels. When an
+;; input channel has a nil value, it is removed from the set of input channels.
+;; The origin of the name was not obvious to me:
+;; http://en.wikipedia.org/wiki/Fan-in
 (defn fan-in
   ([ins] (fan-in ins (chan)))
   ([ins out]
@@ -128,6 +172,8 @@
         (close! out))
     out))
 
+;; Takes values from the input channel until the predicate function returns
+;; true. The function is checked after a value is taken.
 (defn take-until
   ([pred-sentinel in] (take-until pred-sentinel in (chan)))
   ([pred-sentinel in out]
@@ -141,6 +187,7 @@
             (close! out))))
     out))
 
+;; Takes all values from the input channel, conj-ing them onto the collection.
 (defn siphon
   ([in] (siphon in []))
   ([in coll]
@@ -149,6 +196,8 @@
             (recur (conj coll v))
             coll)))))
 
+;; Given a value and an input channel, takes values from the input channel, but
+;; puts the value in the output channel. A channel version of constantly.
 (defn always [v c]
   (let [out (chan)]
     (go (loop []
@@ -158,6 +207,11 @@
             (close! out))))
     out))
 
+;; Given an input channel, returns a hash with :chan and :control channels. The
+;; most recent value taken from the control channel determines whether values
+;; taken from the input channel are put in the output channel. In other words,
+;; put true in the control channel to start getting output; put false in the
+;; control channel to turn it off.
 (defn toggle [in]
   (let [out (chan)
         control (chan)]
@@ -169,12 +223,15 @@
     {:chan out
      :control control}))
 
+;; Looks as though, given a seq of channels, it takes the first value from each
+;; one in order and then stops.
 (defn barrier [cs]
   (go (loop [cs (seq cs) result []]
         (if cs
           (recur (next cs) (conj result (<! (first cs))))
           result))))
 
+;; Same thing, but keeps going.
 (defn cyclic-barrier [cs]
   (let [out (chan)]
     (go (loop []
@@ -184,11 +241,19 @@
 
 (defn mouse-enter [el]
   (let [matcher (dom/el-matcher el)]
+    ;; listen returns a channel; then we thread it through a filter, giving us
+    ;; a channel which only contains events which passed the filter function.
+    ;; Finally we map to (constantly :enter), which gives us an output channel
+    ;; where each original incoming event becomes simply the symbol :enter.
     (->> (listen el :mouseover)
       (filter
         (fn [e]
-          (and (identical? el (.-target e))
-            (if-let [rel (.-relatedTarget e)] 
+          (and
+            (identical? el (.-target e)) ;; event originates from element
+            ;; https://developer.mozilla.org/en-US/docs/Web/API/event.relatedTarget
+            ;; rel will be the element the mouse just left. This if-let clause
+            ;; filters out the event if it comes from a child element of el.
+            (if-let [rel (.-relatedTarget e)]
               (nil? (gdom/getAncestor rel matcher))
               true))))
       (map (constantly :enter)))))
@@ -204,9 +269,12 @@
               true))))
       (map (constantly :leave)))))
 
+;; This powerfully combines distinct with fan-in to return an output channel
+;; which can only receive alternating mouse-in and mouse-out events.
 (defn hover [el]
   (distinct (fan-in [(mouse-enter el) (mouse-leave el)])))
 
+;; TODO: understand this
 (defn hover-child [el tag]
   (let [matcher (dom/tag-match tag)
         over (->> (listen el :mouseover)
@@ -223,6 +291,7 @@
               (filter
                 (fn [e]
                   (and (matcher (.-target e))
+                       ;; http://clojure.github.io/clojure/clojure.core-api.html#clojure.core/as->
                        (as-> (.-relatedTarget e) rel-target
                          (or (nil? rel-target)
                              (not (matcher rel-target)))))))

@@ -9,3 +9,6 @@ Thumbs.db
 
 .rbenv-version
 .rvmrc
+
+# Vim
+*.sw[a-p]
