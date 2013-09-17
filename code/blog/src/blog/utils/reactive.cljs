@@ -274,30 +274,41 @@
 (defn hover [el]
   (distinct (fan-in [(mouse-enter el) (mouse-leave el)])))
 
-;; TODO: understand this
+;; Given a parent element and a tag string, returns an output channel which gets
+;; alternating over and out events for children of the element.
 (defn hover-child [el tag]
   (let [matcher (dom/tag-match tag)
         over (->> (listen el :mouseover)
-               (map
+               (map ;; transform incoming mouseover events
                  #(let [target (.-target %)]
-                    (if (matcher target)
-                      target
+                    (if (matcher target) ;; if event.target matches el...
+                      target ;; map to target
                       (if-let [el (gdom/getAncestor target matcher)]
-                        el
+                        el ;; if any target ancestor matches, map to el; otherwise :no-match
                         :no-match))))
-               (remove #{:no-match})
-               (map #(index-of (dom/by-tag-name el tag) %)))
+               (remove #{:no-match}) ;; ignore :no-match results
+               (map #(index-of (dom/by-tag-name el tag) %))) ;; map to index of tag within element
         out (->> (listen el :mouseout)
-              (filter
+              (filter ;; filter incoming mouseout events
                 (fn [e]
                   (and (matcher (.-target e))
                        ;; http://clojure.github.io/clojure/clojure.core-api.html#clojure.core/as->
+                       ;; so in this simple usage, how is this different from
+                       ;; (let [rel-target (.-relatedTarget e)] ?
+                       ;; TODO: Comprehend!
+                       ;; ...but for now, we can surmise that it filters out
+                       ;; mouseout events caused by one descendant of el moving
+                       ;; to another descendant.
                        (as-> (.-relatedTarget e) rel-target
                          (or (nil? rel-target)
                              (not (matcher rel-target)))))))
               (map (constantly :clear)))]
+    ;; Return only distinct results, which still allows index changes and :clear.
+    ;; I have to admit that in the end, this is beautiful.
     (distinct (fan-in [over out]))))
 
+;; Given a uri, returns an output channel which will receive the jsonp result
+;; when it is ready. core.async meets callback async.
 (defn jsonp
   ([uri] (jsonp (chan) uri))
   ([c uri]
@@ -305,6 +316,11 @@
       (.send gjsonp nil #(put! c %))
       c)))
 
+;; Given an input channel and a delay in milliseconds, returns a throttled
+;; output channel. Use the full signature, [in msecs out control], to provide a
+;; control channel where any value resets the throttle.
+;; NOTE: This function is used in the implementation of throttle; I guess the *
+;; means it's a helper. Why not defn-?
 (defn throttle*
   ([in msecs]
     (throttle* in msecs (chan)))
@@ -312,22 +328,30 @@
     (throttle* in msecs out (chan)))
   ([in msecs out control]
     (go
-      (loop [state ::init last nil cs [in control]]
-        (let [[_ _ sync] cs]
+      (loop [state ::init, last nil, cs [in control]]
+        (let [[_ _ sync] cs] ;; when cs has only two items, sync will be nil
           (let [[v sc] (alts! cs)]
             (condp = sc
+              ;; if value comes from input channel, check state
               in (condp = state
-                   ::init (do (>! out v)
+                   ;; init state: place value in output, start throttling
+                   ::init (do
+                            (>! out v)
                             (>! out [::throttle v])
+                            ;; recur with sync channel which dies after msecs
                             (recur ::throttling last
                               (conj cs (timeout msecs))))
+                   ;; throttling state: put value in out, recur [::throttling value cs]
                    ::throttling (do (>! out v)
-                                  (recur state v cs)))
-              sync (if last 
+                                  (recur state v cs))) ;; in next loop, (= last v)
+              ;; if value comes from sync channel, ???
+              ;; ...why would a value come from the sync channel though?
+              sync (if last ;; if most recent value was non-nil...
                      (do (>! out [::throttle last])
                        (recur state nil
-                         (conj (pop cs) (timeout msecs))))
-                     (recur ::init last (pop cs)))
+                         (conj (pop cs) (timeout msecs)))) ;; recur with new sync timeout
+                     (recur ::init last (pop cs))) ;; else recur [::init last [in control]]
+              ;; if any value comes from control channel, reset to ::init with last=nil and no sync
               control (recur ::init nil
                         (if (= (count cs) 3)
                           (pop cs)
