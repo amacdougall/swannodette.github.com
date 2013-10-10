@@ -224,7 +224,7 @@
      :control control}))
 
 ;; Given a seq of channels, waits until each channel has received a value, and
-;; then returns a vec of the three values.
+;; then returns a vec of each value.
 (defn barrier [cs]
   (go (loop [cs (seq cs) result []]
         (if cs
