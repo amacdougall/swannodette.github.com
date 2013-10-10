@@ -320,7 +320,7 @@
 ;; output channel. Use the full signature, [in msecs out control], to provide a
 ;; control channel where any value resets the throttle.
 ;; NOTE: This function is used in the implementation of throttle; I guess the *
-;; means it's a helper. Why not defn-?
+;; means it's a piece of the implementation.
 (defn throttle*
   ([in msecs]
     (throttle* in msecs (chan)))
@@ -344,8 +344,9 @@
                    ;; throttling state: put value in out, recur [::throttling value cs]
                    ::throttling (do (>! out v)
                                   (recur state v cs))) ;; in next loop, (= last v)
-              ;; if value comes from sync channel, ???
-              ;; ...why would a value come from the sync channel though?
+              ;; if value comes from sync channel, push throttled value to out,
+              ;; recur with new timeout ...why would a value come from the sync
+              ;; channel though?
               sync (if last ;; if most recent value was non-nil...
                      (do (>! out [::throttle last])
                        (recur state nil
@@ -366,8 +367,8 @@
   ([in msecs] (throttle in msecs (chan)))
   ([in msecs out]
     (->> (throttle* in msecs out)
-      (filter #(and (vector? %) (= (first %) ::throttle)))
-      (map second))))
+      (filter #(and (vector? %) (= (first %) ::throttle))) ;; accept only [::throttle _] output
+      (map second)))) ;; get actual value
 
 (defn debounce
   ([source msecs]
