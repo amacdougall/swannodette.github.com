@@ -223,8 +223,8 @@
     {:chan out
      :control control}))
 
-;; Looks as though, given a seq of channels, it takes the first value from each
-;; one in order and then stops.
+;; Given a seq of channels, waits until each channel has received a value, and
+;; then returns a vec of the three values.
 (defn barrier [cs]
   (go (loop [cs (seq cs) result []]
         (if cs
